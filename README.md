@@ -67,7 +67,7 @@ With `uv` installed and the repository cloned, you do not need to manually creat
 
 Simply execute any project scripts seamlessly using `uv run`. This command auto-discovers the `uv.lock` file, automatically resolves the environment, and triggers the script:
 ```bash
-# Example: Run the eviction analysis tool
+# Example: Run the eviction analysis tool 
 uv run -m src.analyze_evictions --mode inspect
 
 # Example: Process a sweep of compression budgets
