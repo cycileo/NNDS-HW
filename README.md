@@ -46,7 +46,7 @@ The project is structured into modular Python files and auxiliary directories.
 ### Root Files and Other Directories
 - **`Rocci - NNDS HW.ipynb`**: The main Jupyter Notebook consolidating the theoretical explanations, step-by-step training narrative, and the inline visualizations of the results. 
 - **`NNDS_2025_Original.ipynb`**: The original, unaltered homework template.
-- **`data/`**: Contains the original csv dataset, the processeddataset files (`.npy`), tokenizer (`tokenizer.json`), and trained model weights (`.eqx`).
+- **`data/`**: Contains the original csv dataset, the processed dataset files (`.npy`), tokenizer (`tokenizer.json`), and trained model weights (`.eqx`).
 - **`assets/`**: Auxiliary folder used for storing plots and training histories.
 
 ---
