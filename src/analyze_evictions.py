@@ -102,7 +102,7 @@ def compute_dataset_statistics(test_x: np.ndarray, test_y: np.ndarray, vocab_siz
         
     return word_totals, bias_bal
 
-def inspect_token_eviction(compressor_name: str = "random", budget: int = 18, protect_sor: bool = False, top_k: int = 5, order_by: str = "retention", setup_data: Dict = None, data_dir: str = "data", batch_size: int = 128, num_samples: int = None):
+def inspect_token_eviction(compressor_name: str = "random", budget: int = 18, protect_sor: bool = False, top_k: int = 5, order_by: str = "retention", aggregation: str = "layer", setup_data: Dict = None, data_dir: str = "data", batch_size: int = 128, num_samples: int = None):
     """
     Manual inspection function for analysis. Shows a tabular view of the top tokens 
     kept and evicted by a compressor, sortable by retention rate or absolute count.
@@ -138,15 +138,32 @@ def inspect_token_eviction(compressor_name: str = "random", budget: int = 18, pr
         indices = np.arange(modified_batch.shape[1])
         valid_mask = indices[None, :] <= sor_pos[:, None]
         
-        # Track presented slots (across all layers)
-        batch_counts = np.bincount(modified_batch[valid_mask].flatten(), minlength=vocab_size)
-        total_layer_slots += batch_counts * num_layers
-        
-        # Track layer hits
-        kept_tokens = modified_batch[np.arange(len(batch_x))[None, :, None], layer_ids_np]
-        for l in range(num_layers):
-            valid_kept_l = kept_tokens[l][mask_within_sor[l]]
-            total_layer_hits += np.bincount(valid_kept_l.flatten(), minlength=vocab_size)
+        # Track slots and hits based on aggregation strategy
+        if aggregation in ["sequence_any", "sequence_all"]:
+            kept_in_layers = np.zeros((num_layers, modified_batch.shape[0], modified_batch.shape[1]), dtype=bool)
+            b_idx = np.arange(len(batch_x))[:, None]
+            for l in range(num_layers):
+                kept_in_layers[l, b_idx, layer_ids_np[l]] = True
+                kept_in_layers[l, ~valid_mask] = False
+                
+            if aggregation == "sequence_any":
+                final_kept_mask = np.any(kept_in_layers, axis=0)
+            else: # sequence_all
+                final_kept_mask = np.all(kept_in_layers, axis=0) & valid_mask
+                
+            total_layer_slots += np.bincount(modified_batch[valid_mask].flatten(), minlength=vocab_size)
+            total_layer_hits += np.bincount(modified_batch[final_kept_mask].flatten(), minlength=vocab_size)
+            
+        else: # layer
+            # Track presented slots (across all layers)
+            batch_counts = np.bincount(modified_batch[valid_mask].flatten(), minlength=vocab_size)
+            total_layer_slots += batch_counts * num_layers
+            
+            # Track layer hits
+            kept_tokens = modified_batch[np.arange(len(batch_x))[None, :, None], layer_ids_np]
+            for l in range(num_layers):
+                valid_kept_l = kept_tokens[l][mask_within_sor[l]]
+                total_layer_hits += np.bincount(valid_kept_l.flatten(), minlength=vocab_size)
             
     # Filter noise from rare words
     # Token must appear in at least 10 sequences (60 layer-slots)
@@ -179,7 +196,7 @@ def inspect_token_eviction(compressor_name: str = "random", budget: int = 18, pr
     print_table(f"[{compressor_name.upper()} | Budget {budget}] TOP {top_k} MOST EVICTED ({metric_name})", sort_evicted)
 
 
-def evaluate_eviction(compressors: List[str] = ["random", "knorm", "snapkv"], budgets: List[int] = [3, 10, 30, 100], k_sentiment: int = 100, k_frequent: int = 20, protect_sor: bool = False, setup_data: Dict = None, data_dir: str = "data", batch_size: int = 128, num_samples: int = None) -> Dict:
+def evaluate_eviction(compressors: List[str] = ["random", "knorm", "snapkv"], budgets: List[int] = [3, 10, 30, 100], k_sentiment: int = 100, k_frequent: int = 20, protect_sor: bool = False, aggregation: str = "layer", setup_data: Dict = None, data_dir: str = "data", batch_size: int = 128, num_samples: int = None) -> Dict:
     """
     Runs a parameter sweep calculating GT-Aligned Cache, Context-Aligned Sentiment Retention, 
     and Top-Frequent Retention metrics across compressors and budgets.
@@ -255,23 +272,50 @@ def evaluate_eviction(compressors: List[str] = ["random", "knorm", "snapkv"], bu
                     
                 # Kept
                 kept_tokens = modified_batch[np.arange(len(batch_x))[None, :, None], layer_ids_np]
-                m_f = freq_mask[kept_tokens] & mask_within_sor
-                f_kept += np.sum(m_f) / num_layers
                 
-                m_s = np.zeros_like(kept_tokens, dtype=bool)
-                if np.any(is_pos_seq):
-                    m_s[:, is_pos_seq, :] = pos_mask[kept_tokens[:, is_pos_seq, :]]
-                if np.any(is_neg_seq):
-                    m_s[:, is_neg_seq, :] = neg_mask[kept_tokens[:, is_neg_seq, :]]
-                m_s = m_s & mask_within_sor
-                s_kept += np.sum(m_s) / num_layers
-                
-                # GT Aligned Cache
-                l_sign = (batch_y * 2 - 1).astype(float)
-                b_bal_k = np.where(mask_within_sor, bias_bal[kept_tokens], 0.0)
-                s_m_gt = np.sum(b_bal_k * l_sign[None, :, None], axis=(0, 2)) / num_layers
-                n_k = np.sum(mask_within_sor, axis=(0, 2)) / num_layers
-                m_gt_global.extend(np.where(n_k > 0, s_m_gt / (n_k + 1e-12), 0.0))
+                if aggregation in ["sequence_any", "sequence_all"]:
+                    kept_in_layers = np.zeros((num_layers, batch_tokens.shape[0], batch_tokens.shape[1]), dtype=bool)
+                    b_idx = np.arange(len(batch_x))[:, None]
+                    for l in range(num_layers):
+                        kept_in_layers[l, b_idx, layer_ids_np[l]] = True
+                        kept_in_layers[l, ~v_mask] = False
+                        
+                    if aggregation == "sequence_any":
+                        final_kept_mask = np.any(kept_in_layers, axis=0) # (batch, seq_len)
+                    else:
+                        final_kept_mask = np.all(kept_in_layers, axis=0) & v_mask
+                        
+                    f_kept += np.sum(freq_mask[batch_tokens[final_kept_mask]])
+                    
+                    if np.any(is_pos_seq):
+                        s_kept += np.sum(pos_mask[batch_tokens[is_pos_seq[:, None] & final_kept_mask]])
+                    if np.any(is_neg_seq):
+                        s_kept += np.sum(neg_mask[batch_tokens[is_neg_seq[:, None] & final_kept_mask]])
+                        
+                    # GT Aligned Cache
+                    l_sign = (batch_y * 2 - 1).astype(float)
+                    b_bal_k = np.where(final_kept_mask, bias_bal[batch_tokens], 0.0)
+                    s_m_gt = np.sum(b_bal_k * l_sign[:, None], axis=1) # (batch,)
+                    n_k = np.sum(final_kept_mask, axis=1)       # (batch,)
+                    m_gt_global.extend(np.where(n_k > 0, s_m_gt / (n_k + 1e-12), 0.0))
+                else: # layer
+                    m_f = freq_mask[kept_tokens] & mask_within_sor
+                    f_kept += np.sum(m_f) / num_layers
+                    
+                    m_s = np.zeros_like(kept_tokens, dtype=bool)
+                    if np.any(is_pos_seq):
+                        m_s[:, is_pos_seq, :] = pos_mask[kept_tokens[:, is_pos_seq, :]]
+                    if np.any(is_neg_seq):
+                        m_s[:, is_neg_seq, :] = neg_mask[kept_tokens[:, is_neg_seq, :]]
+                    m_s = m_s & mask_within_sor
+                    s_kept += np.sum(m_s) / num_layers
+                    
+                    # GT Aligned Cache
+                    l_sign = (batch_y * 2 - 1).astype(float)
+                    b_bal_k = np.where(mask_within_sor, bias_bal[kept_tokens], 0.0)
+                    s_m_gt = np.sum(b_bal_k * l_sign[None, :, None], axis=(0, 2)) / num_layers
+                    n_k = np.sum(mask_within_sor, axis=(0, 2)) / num_layers
+                    m_gt_global.extend(np.where(n_k > 0, s_m_gt / (n_k + 1e-12), 0.0))
                 
             res_gt = np.mean(m_gt_global) * 100.0 if m_gt_global else 0.0
             res_s = (s_kept / s_pres * 100.0) if s_pres > 0 else 0.0
@@ -304,7 +348,7 @@ def evaluate_eviction(compressors: List[str] = ["random", "knorm", "snapkv"], bu
     
     return results
 
-def evaluate_sor_retention(compressors: List[str] = ["random", "knorm", "snapkv"], budgets: List[int] = [3, 10, 30, 100], setup_data: Dict = None, data_dir: str = "data", batch_size: int = 128, num_samples: int = None) -> Dict:
+def evaluate_sor_retention(compressors: List[str] = ["random", "knorm", "snapkv"], budgets: List[int] = [3, 10, 30, 100], aggregation: str = "layer", setup_data: Dict = None, data_dir: str = "data", batch_size: int = 128, num_samples: int = None) -> Dict:
     """
     Runs a parameter sweep calculating the retention rate of the [SOR] token across compressors and budgets
     with protect_sor=False.
@@ -342,11 +386,17 @@ def evaluate_sor_retention(compressors: List[str] = ["random", "knorm", "snapkv"
                 layer_ids_np = np.array(layer_indices)
                 mask_within_sor = layer_ids_np <= sor_pos[None, :, None]
                 
-                kept_tokens = modified_batch[np.arange(len(batch_x))[None, :, None], layer_ids_np]
-                m_sor = (kept_tokens == sor_id) & mask_within_sor
+                kept_sor_layers = np.any(layer_ids_np == sor_pos[None, :, None], axis=2)
                 
-                total_sor_hits += np.sum(m_sor)
-                total_sor_slots += len(batch_x) * num_layers
+                if aggregation == "sequence_any":
+                    total_sor_hits += np.sum(np.any(kept_sor_layers, axis=0))
+                    total_sor_slots += len(batch_x)
+                elif aggregation == "sequence_all":
+                    total_sor_hits += np.sum(np.all(kept_sor_layers, axis=0))
+                    total_sor_slots += len(batch_x)
+                else: # layer
+                    total_sor_hits += np.sum(kept_sor_layers)
+                    total_sor_slots += len(batch_x) * num_layers
 
             retention = (total_sor_hits / total_sor_slots * 100.0) if total_sor_slots > 0 else 0.0
             results[comp_name][b] = retention
@@ -377,6 +427,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=None, help="Number of test samples")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size for analysis")
     parser.add_argument("--protect_sor", action="store_true", help="Protect [SOR] token from eviction")
+    parser.add_argument("--aggregation", type=str, choices=["layer", "sequence_any", "sequence_all"], default="layer", help="Aggregation metric for retention tracking")
     
     # Sweep Args
     parser.add_argument("--budgets", type=int, nargs="+", default=[3, 10, 30, 100], help="Budgets for sweep")
@@ -401,6 +452,7 @@ if __name__ == "__main__":
             protect_sor=args.protect_sor,
             top_k=args.top_k,
             order_by=args.order_by,
+            aggregation=args.aggregation,
             setup_data=setup_data,
             data_dir=args.data_dir,
             batch_size=args.batch_size,
@@ -413,6 +465,7 @@ if __name__ == "__main__":
             k_sentiment=args.k_sentiment,
             k_frequent=args.k_frequent,
             protect_sor=args.protect_sor,
+            aggregation=args.aggregation,
             setup_data=setup_data,
             data_dir=args.data_dir,
             batch_size=args.batch_size,
@@ -422,6 +475,7 @@ if __name__ == "__main__":
         evaluate_sor_retention(
             compressors=args.compressors,
             budgets=args.budgets,
+            aggregation=args.aggregation,
             setup_data=setup_data,
             data_dir=args.data_dir,
             batch_size=args.batch_size,
