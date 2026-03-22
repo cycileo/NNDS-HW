@@ -21,16 +21,6 @@ def load_data(data_dir, num_samples=None):
         
     return test_x, test_y
 
-def get_config():
-    """Returns the expected hyperparameters based on the training configuration."""
-    return {
-        "vocab_size": 5000,
-        "max_seq_len": 127,
-        "d_model": 256,
-        "num_heads": 4,
-        "num_layers": 4,
-        "mlp_hidden": 1024
-    }
 
 def prepare_batch_for_inference(batch_x, sor_id, pad_id):
     """
@@ -266,13 +256,12 @@ def run_inference(
     rot_id = tokenizer.token_to_id("[ROT]")
     rp_id = tokenizer.token_to_id("[RP]")
     
-    print(f"Loading config and initialized model...")
-    cfg = get_config() # Keep vocab and seq_len from here for now
+    print(f"Loading initialized model...")
     key = jax.random.PRNGKey(0)
     
     model = DecoderSLM(
-        vocab_size=cfg["vocab_size"],
-        max_seq_len=cfg["max_seq_len"],
+        vocab_size=tokenizer.get_vocab_size(),
+        max_seq_len=127,
         d_model=d_model,
         num_heads=num_heads,
         num_layers=num_layers,

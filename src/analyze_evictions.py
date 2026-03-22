@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 from tokenizers import Tokenizer
 
 from src.model import DecoderSLM
-from src.predict import get_config, load_data, prepare_batch_for_inference
+from src.predict import load_data, prepare_batch_for_inference
 from src.compression import RandomCompressor, KNormCompressor, SnapKVCompressor
 
 @eqx.filter_jit
@@ -29,20 +29,15 @@ def load_setup(data_dir: str = "data", num_samples: int = None, model_weights: s
     tokenizer = Tokenizer.from_file(os.path.join(data_dir, "tokenizer.json"))
     pad_id = tokenizer.token_to_id("[PAD]")
     sor_id = tokenizer.token_to_id("[SOR]")
-    cfg = get_config()
-    cfg["d_model"] = d_model
-    cfg["num_heads"] = num_heads
-    cfg["num_layers"] = num_layers
-    cfg["mlp_hidden"] = mlp_hidden
-    
     print("Loading data...")
     test_x, test_y = load_data(data_dir, num_samples)
     
     print("Initializing model...")
+    vocab_size = tokenizer.get_vocab_size()
     key = jax.random.PRNGKey(0)
     model = DecoderSLM(
-        vocab_size=cfg["vocab_size"],
-        max_seq_len=cfg["max_seq_len"],
+        vocab_size=vocab_size,
+        max_seq_len=127,
         d_model=d_model,
         num_heads=num_heads,
         num_layers=num_layers,
@@ -59,7 +54,8 @@ def load_setup(data_dir: str = "data", num_samples: int = None, model_weights: s
         
     return {
         "tokenizer": tokenizer,
-        "cfg": cfg,
+        "vocab_size": vocab_size,
+        "num_layers": num_layers,
         "model": model,
         "test_x": test_x,
         "test_y": test_y,
@@ -116,8 +112,8 @@ def inspect_token_eviction(compressor_name: str = "random", budget: int = 18, pr
     test_y = setup_data["test_y"]
     pad_id = setup_data["pad_id"]
     sor_id = setup_data["sor_id"]
-    vocab_size = setup_data["cfg"]["vocab_size"]
-    num_layers = setup_data["cfg"]["num_layers"]
+    vocab_size = setup_data["vocab_size"]
+    num_layers = setup_data["num_layers"]
     
     comp_map = {"random": RandomCompressor, "knorm": KNormCompressor, "snapkv": SnapKVCompressor}
     compressor = comp_map[compressor_name](budget=budget, apply_on_decode=False, protect_sor=protect_sor, key=jax.random.PRNGKey(42))
@@ -204,13 +200,13 @@ def evaluate_eviction(compressors: List[str] = ["random", "knorm", "snapkv"], bu
     if setup_data is None:
         setup_data = load_setup(data_dir=data_dir, num_samples=num_samples)
         
-    vocab_size = setup_data["cfg"]["vocab_size"]
+    vocab_size = setup_data["vocab_size"]
     pad_id = setup_data["pad_id"]
     sor_id = setup_data["sor_id"]
     test_x = setup_data["test_x"]
     test_y = setup_data["test_y"]
     model = setup_data["model"]
-    num_layers = setup_data["cfg"]["num_layers"]
+    num_layers = setup_data["num_layers"]
     
     word_totals, bias_bal = compute_dataset_statistics(test_x, test_y, vocab_size, pad_id, sor_id)
     
@@ -360,7 +356,7 @@ def evaluate_sor_retention(compressors: List[str] = ["random", "knorm", "snapkv"
     pad_id = setup_data["pad_id"]
     test_x = setup_data["test_x"]
     model = setup_data["model"]
-    num_layers = setup_data["cfg"]["num_layers"]
+    num_layers = setup_data["num_layers"]
     
     comp_map = {"random": RandomCompressor, "knorm": KNormCompressor, "snapkv": SnapKVCompressor}
     results = {c: {} for c in compressors}

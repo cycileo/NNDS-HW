@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from src.model import DecoderSLM
-from src.predict import get_config, load_data, batched_generate, analyze_generation, prepare_batch_for_inference
+from src.predict import load_data, batched_generate, analyze_generation, prepare_batch_for_inference
 from src.compression import BaseKVCompressor, RandomCompressor, KNormCompressor, SnapKVCompressor
 
 
@@ -232,13 +232,12 @@ def run_compression_benchmark(
     rot_id = tokenizer.token_to_id("[ROT]")
     rp_id = tokenizer.token_to_id("[RP]")
     
-    print(f"Loading config and initialized model...")
-    cfg = get_config()
+    print(f"Loading initialized model...")
     key = jax.random.PRNGKey(0)
     
     model = DecoderSLM(
-        vocab_size=cfg["vocab_size"],
-        max_seq_len=cfg["max_seq_len"],
+        vocab_size=tokenizer.get_vocab_size(),
+        max_seq_len=127,
         d_model=d_model,
         num_heads=num_heads,
         num_layers=num_layers,
